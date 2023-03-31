@@ -1,0 +1,179 @@
+---
+title: "NYPD Shooting Data Report"
+author: "CFT"
+date: "2023-03-21"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+```
+# New York City Police Shooting Incident Data
+
+```{r dataimp,echo=FALSE}
+#NYPD Shooting incident data(historic) csv link
+a <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+#converting character dates to date format
+a$OCCUR_DATE <- as.Date(a$OCCUR_DATE, format="%m/%d/%Y")
+#Removing unwanted variables
+a <- a[,-c(1,5,6,7,9,11,12,14,15,16,17,18,19)]
+#replacing empty values in PERP_SEX variable with text
+a$PERP_SEX[a$PERP_SEX == ""] <- "BLANK"
+#creating my own variable, character year
+a$Year <- as.numeric(format(as.Date(a$OCCUR_DATE, format="%m/%d/%Y"),format="%Y"))
+#creating my own variable, numeric month
+a$Month <- as.numeric(format(as.Date(a$OCCUR_DATE, format="%m/%d/%Y"),format="%m"))
+#creating placeholders for my number of daylight hours and time of day variables
+a$Day_Length <- NA
+a$Solstice_Dist <- NA
+# for loop that populates my number of daylight hours and time of day variables with the correct character values
+for(i in 1:nrow(a)){
+  #this code compares the crime date with the time range between equinoxes. In order to compare only within one calendar year, I had to create a new time range for each date going row by row. 
+  a[i,9] <- ifelse(a$OCCUR_DATE[i] > as.Date(paste("03/20/",a$Year[i],sep=""), format="%m/%d/%Y") & a$OCCUR_DATE[i] < as.Date(paste("09/23/",a$Year[i],sep=""), format="%m/%d/%Y"),"short","long")
+ #This code creates assigns a numeric value based on the date distance between the solstice
+  if(a[i,9] == "long" & a$OCCUR_DATE[i] < as.Date(paste("03/20/",a$Year[i],sep=""),format="%m/%d/%Y")){
+  a[i,10] <- abs(difftime(a$OCCUR_DATE[i],as.Date(paste("12/21/",a$Year[i]-1,sep=""),format="%m/%d/%Y"),units = "days"))
+  }
+ if(a[i,9] == "long" & a$OCCUR_DATE[i] > as.Date(paste("9/23/",a$Year[i],sep=""),format="%m/%d/%Y")){
+  a[i,10] <- abs(difftime(a$OCCUR_DATE[i],as.Date(paste("12/21/",a$Year[i],sep=""),format="%m/%d/%Y"),units = "days"))
+ }
+ if(a[i,9] == "short"){
+    a[i,10] <- abs(difftime(a$OCCUR_DATE[i],as.Date(paste("06/21/",a$Year[i],sep=""),format="%m/%d/%Y"),units = "days"))
+ }
+# This part converts STATISTICAL_MURDER_FLAG to values with zero representing no murder and one representing a murder for ease of counting
+a$STATISTICAL_MURDER_FLAG[i] <- ifelse(a$STATISTICAL_MURDER_FLAG[i] == "false",0,1)
+}
+#This part converts STATISTICAL_MURDER_FLAG to numeric values instead of character
+a$STATISTICAL_MURDER_FLAG <- as.numeric(a$STATISTICAL_MURDER_FLAG)
+b <- a[,c(1,4,5,6,7,9,10)]
+```
+This data covers `r min(a$Year)` to `r max(a$Year)` with information about time, location, and the demographics of individuals involved. The original data includes 20 variables both numeric and character, though several of the numerical variables such as the INCIDENT_KEY are categorical and so could be treated as either. 
+
+To produce my analysis I chose to create a new reduced data set that contained only the variables OCCUR_DATE, STATISTICAL_MURDER_FLAG, PERP_SEX,and VIC_SEX.I converted OCCUR_DATE variable to date values from character and STATISTICAL_MURDER_FLAG to numeric from character. I also created several new variables including Year, which is the year value from OCCUR_TIME, Month, the numeric month value from OCCUR_TIME, Day_Length, which takes on the values long and short and is determined by whether OCCUR_DATE is between the equinoxes on March 20 and September 23 (and the city has more than 12 hours of daylight) or outside that range (and the city has less than 12 hours of daylight), and Solstice_Dist, which counts the days a long Day_Length date is away from the winter Solstice or a short Day_Length is away from the winter solstice. 
+
+
+## Sex Related Data
+
+```{r perpvicsexdata1, echo=FALSE}
+#Here are some basic plots that show the shooting involvment of different sexes, note that the perpetrator graph has an extra bar for BLANK
+p <- count(a,PERP_SEX)
+v <- count(a,VIC_SEX)
+gp <- ggplot(p, aes(PERP_SEX,n)) 
+gp + geom_col() + xlab("Perpetrator Sex") +  ylab("Number of Shootings")
+gv <- ggplot(v, aes(VIC_SEX,n)) 
+gv + geom_col() + xlab("Victim Sex") + ylab("Number of Shootings")
+```
+
+
+```{r perpvicsexdata2, echo=FALSE}
+#Here is a plot that shows the number of shootings where both victim and perpetrator sex is known, comparing whether the victim is of the same or opposite sex 
+abothsex <- a[a$PERP_SEX != "BLANK" & a$PERP_SEX != "U" & a$VIC_SEX != "U",]
+abothsexsame <- abothsex[abothsex$PERP_SEX == abothsex$VIC_SEX,]
+abothsexdiff <- abothsex[abothsex$PERP_SEX != abothsex$VIC_SEX,]
+bs <- count(abothsexsame,VIC_SEX)
+bs$SEX_COMPARISON <- "SAME"
+bd <- count(abothsexdiff,VIC_SEX)
+bd$SEX_COMPARISON <- "DIFFERENT"
+allbsbd <- rbind(bs,bd)
+gbsbd <- ggplot(allbsbd, aes(fill = SEX_COMPARISON, y = n, x = VIC_SEX)) 
+gbsbd + geom_col() + xlab("Victim Sex") +  ylab("Number of Shootings") + ggtitle("Shooting Incidents Where Both Victim and Perpetrator Sex are Known")
+
+```
+
+
+Note the majority of shooting incidents is men targeting other men. However it is interesting to see that female shooters also target men more often than other women. A significant amount of incidents did not have sex records of either the perpetrator or victim and are not included in the graphic. 
+
+## Daylight Related Data
+
+
+```{r timevar1, echo=FALSE}
+#Here is a useful function that will tell how many of each of a variable's categories there are in a dataframe. For my data it shows there are unequal amounts of each category. 
+daystuff <- count(a,Day_Length)
+# Here is the creation of dataframes that counts the numbers of shootings and murders within each category
+daydf <- a %>% group_by(Day_Length) %>% summarize(Shootings = n(), Murders= sum(STATISTICAL_MURDER_FLAG))
+dayLengthg <- ggplot(daydf, aes( y = Shootings, x = Day_Length)) 
+dayLengthg + geom_col() + xlab("Day Length > 12 hours or < 12 hours") +  ylab("Number of Shootings") + ggtitle("Shooting Incidents Based on Day Length ")
+dayLengthmg <- ggplot(daydf, aes( y = Murders, x = Day_Length)) 
+dayLengthmg + geom_col() + xlab("Day Length > 12 hours or < 12 hours") +  ylab("Number of Gun Murders") + ggtitle("Gun Murders Based on Day Length ")
+```
+
+
+As one can see, days that are shorter on average have many more shooting incidents and gun murders. But to argue the theory that shorter days has a significant impact on shooting incidents and murders, we must show that the fewer daylight hours, the closer short days are to the winter solstice, the more shooting incidents and murders, and with more daylight hours, the closer the long days are to the summer solstice, the fewer shooting incidents occur. 
+
+## Day Length Graphs and Modeling
+
+```{r timevar2, echo=FALSE}
+# Here is the creation of dataframes that counts the numbers of shootings and murders on different days based on how far they are from the solstice. 
+daydf2 <- a %>% group_by(Day_Length,Solstice_Dist) %>% summarize(Shootings = n(), Murders = sum(STATISTICAL_MURDER_FLAG))
+dayLengthg <- ggplot(daydf2, aes(color = Day_Length, y = Shootings, x = Solstice_Dist)) 
+dayLengthg + geom_point() + xlab("Days from Solstice") +  ylab("Number of Shootings") + ggtitle("Shooting Incidents Based on Day Length") + scale_fill_manual(values=c("short"="darkblue","long" = "pink"))+ geom_smooth(method = "lm", se = FALSE)
+dayLengthmg <- ggplot(daydf2, aes(color = Day_Length, y = Murders, x = Solstice_Dist)) 
+dayLengthmg + geom_point() + xlab("Days from Solstice") +  ylab("Number of Gun Murders") + ggtitle("Gun Murders Based on Day Length ")+ scale_fill_manual(values=c("short"="darkblue","long" = "pink"))+ geom_smooth(method = "lm", se = FALSE)
+daydf3 <- daydf2[daydf2$Day_Length == "short",]
+daydf4 <- daydf2[daydf2$Day_Length == "long",]
+```
+
+
+In these charts, the blue slopes, showing the distance from the winter solstice, should be negative to indicate that the more daylight hours, the fewer number of crimes, if there is a correlation. There is a noticeable negative trend with both the shooting and murder data, but only the shooting data is highly significant. The red slopes should be positive, to indicate that the further from the summer solstice and the fewer daylight hours, the greater number of crimes, but show almost no correlation. 
+
+The models for short day crime patterns this data produces are:
+S = 193.60493 + -0.67235D, where S is number of shootings and D is days from the winter solstice.This model has very high significance, with a p value well below 0.00001 for both variables. The Adjusted R-squared of 0.3495 means 34.95% of the variance in shootings can be explained by distance in days from the winter solstice. 
+M = 33.70437 + -0.07738D, where M is number of gun murders and D is days from the winter solstice.
+
+the coefficient of D only has a pvalue of 0.012 and so this model has much less statisitcal significance. The Adjusted R-squared of 0.05646 means only 5.646% of the variance in gun murders can be explained by the distance in days from the winter solstice. 
+
+
+```{r timevar3, echo = FALSE}
+# this is the code that generates the models, and shows the summary statistics of the short day models, once the summary lines are no longer commented out. 
+Shooting_Model1 <- lm(Shootings~Solstice_Dist,data = daydf3)
+summary(Shooting_Model1)
+Murder_Model1 <- lm(Murders~Solstice_Dist,data = daydf3)
+summary(Murder_Model1)
+# this is the code that generates the insignificant models, and shows the summary statistics of the longer day models, once the summary lines are no longer commented out. 
+# this is the code that shows the summary statistics of the models. 
+Shooting_Model2 <- lm(Shootings~Solstice_Dist,data = daydf4)
+summary(Shooting_Model2)
+Murder_Model2 <- lm(Murders~Solstice_Dist,data = daydf4)
+summary(Murder_Model2)
+```
+
+## Sex and Daylight Data
+
+```{r sextimevar, echo=FALSE}
+# generates a dataframe of data for shootings and gun murders with a variable for sex
+daydfSex <- b %>% group_by(Day_Length,Solstice_Dist, VIC_SEX) %>% summarize(Shootings = n(), Murders= sum(STATISTICAL_MURDER_FLAG))
+# creates a dataframe for short days where the victim is female
+daydfSexF <- daydfSex[daydfSex$Day_Length == "short" & daydfSex$VIC_SEX == "F",]
+# creates model of shooting data for female victims
+sexF_Shooting_Model <- lm(Shootings~Solstice_Dist,data = daydfSexF)
+summary(sexF_Shooting_Model)
+# creates a dataframe for short days where the victim is male
+daydfSexM <- daydfSex[daydfSex$Day_Length == "short" & daydfSex$VIC_SEX == "M",]
+# creates model of shooting data for male victims
+sexM_Shooting_Model <- lm(Shootings~Solstice_Dist,data = daydfSexM)
+summary(sexM_Shooting_Model)
+# creates model of gun deaths where victim is female
+sexF_Murder_Model <- lm(Murders~Solstice_Dist,data = daydfSexF)
+summary(sexF_Murder_Model)
+# creates model of gun deaths where victim is male
+sexM_Murder_Model <- lm(Murders~Solstice_Dist,data = daydfSexM)
+summary(sexM_Murder_Model)
+```
+
+```{r sextimevar2, echo=FALSE}
+daydfSexShort <- daydfSex[daydfSex$Day_Length == "short" & daydfSex$VIC_SEX != "U",]
+dayLengthgSex <- ggplot(daydfSexShort, aes(color = VIC_SEX, y = Shootings, x = Solstice_Dist)) 
+dayLengthgSex + geom_point() + xlab("Days from Winter Solstice") +  ylab("Number of Shootings") + ggtitle("Short Day Shooting Incidents Based on Day Length") + scale_fill_manual(values=c("M"="lightblue","F" = "lightpink"))+ geom_smooth(method = "lm", se = FALSE)
+dayLengthmgSex <- ggplot(daydfSexShort, aes(color = VIC_SEX, y = Murders, x = Solstice_Dist))
+dayLengthmgSex + geom_point() + xlab("Days from Winter Solstice") +  ylab("Number of Gun Murders") + ggtitle("Short Day Gun Murders Based on Day Length ")+ scale_fill_manual(values=c("M"="lightblue","F" = "lightpink"))+ geom_smooth(method = "lm", se = FALSE)
+```
+
+
+
+## Conclusion
+There is a statistically significant effect of daylight hours on shooting incident and gun murder rates once the length of day is less than 12 hours, showing a increase in both shooting incidents and gun murders as daylight hours decrease. The effect of daylight hours on gun murders is minimal compared to shooting incidents but still shows some explanatory power, except in the case of female gun murder victims. One could also conclude it is safer, in terms of avoiding gun violence, to avoid traveling to New York City close to the Winter Solstice, especially if you are a man.
+
+## Bias information
+One obvious bias is I subjectively chose time periods based on my interpretation of crime seasonality (choosing 12 hour days as an arbitrary cutoff to separate data) to see if there was a pattern that emerged. I was biased by being conditioned to using a western Gregorian calendar and by my personal experiences with crime. I believed that because there was warmer weather and more tourists between the equinoxes that there would be more crime, and the data showed the opposite, meaning that the nicer weather and higher concentration of people unused to the city does not have a visible effect on reported shooting incidents, or I have misjudged weather and tourism patterns. With further testing one might find that the window where daylight effects crime is much narrower or wider than the 6 months between equinoxes or that other date related factors such as timing of holidays might be contributing to Outliers or other data skewing. 

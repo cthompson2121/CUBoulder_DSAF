@@ -1,0 +1,120 @@
+---
+title: "JHopkins Covid Project"
+author: "CFT"
+date: "2023-03-22"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+
+# Population and Latitude as a model for Covid Cases and Death
+
+Data stored by Johns Hopkins was collected from https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series. This data contains the number of covid cases and deaths from January 2020 to March 2023 globally and includes factors Province_State, Country_Region, Lat (lattitude), date, and population. 
+
+This report will analyze the effects of latitude and population on total and rates of covid cases and deaths over time. It is well documented that the further from the equator there is a general trend of greater GDP per capita so the distance from the equator, the absolute value of the latitude, is the true focus. I created a variable called Eq_Dist to represent this. I also created variables deaths per thousand and cases per thousand that reflect the deaths per thousand of a population in a particular country. I collected both global data and US data to model. 
+
+The data is downloaded and cleaned in the sections below.
+
+```{r importcleandata,show_col_types = FALSE}
+library(tidyverse)
+library(lubridate)
+link1 <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+files <- c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+link1_files <- str_c(link1,files) 
+# create data frames of files 
+us_covid <- read.csv(link1_files[1],check.names=FALSE)
+global_covid <- read.csv(link1_files[2], check.names=FALSE)
+us_covidde <- read.csv(link1_files[3],check.names=FALSE)
+global_covidde <- read.csv(link1_files[4],check.names=FALSE)
+#cleanup of global data
+# converting dates from column values to a single row combined with cases or deaths and removing longitude
+global_covid <- global_covid %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat,Long), names_to = "date", values_to = "cases") %>% select(-c(Long))
+global_covidde <- global_covidde %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat,Long), names_to = "date", values_to = "deaths") %>% select(-c(Long))
+# joining global covid cases with deaths
+global_covid_all <- global_covid %>% full_join(global_covidde) %>% rename(Country_Region = `Country/Region`,Province_State = `Province/State`) %>% mutate(date = mdy(date))
+# removing data for times with zero cases and replacing blanks with NA 
+global_covid_pos <- global_covid_all %>% filter(cases > 0) %>% mutate_all(na_if,"")
+# inputting additional data for population
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>% select(-c(Lat,Long_, Combined_Key, code3, iso2, iso3, Admin2)) 
+# combining population by Province_State and Country_Region data with global covid data
+global_covid_pos <- global_covid_pos %>% left_join(uid, by = c("Province_State","Country_Region")) %>% select(-c(UID,FIPS)) 
+# creating Distance from Equator value and removing rows with NAs in Eq_Dist and Population
+global_covid_pos <- global_covid_pos %>% mutate(Eq_Dist = round(abs(Lat))) %>% filter(!is.na(Eq_Dist))  %>% filter(!is.na(Population))
+#create dataframe of global data grouped by distance from equator
+global_by_Eq_Dist <- global_covid_pos %>% group_by (Eq_Dist, date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>% mutate(deaths_per_thou = deaths*1000/Population) %>% select(Eq_Dist, date, cases, deaths, deaths_per_thou, Population) %>% ungroup()
+
+
+#US DATA
+# converting columns of dates for covid case data to rows
+us_covid <- us_covid %>% pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to = "cases") %>% select(Admin2:cases) %>% mutate(date = mdy(date))
+# converting columns of dates for covid death data to rows
+us_covidde <- us_covidde %>% pivot_longer(cols = -(UID:Population), names_to = "date", values_to = "deaths") %>% select(Admin2:deaths) %>% mutate(date = mdy(date))
+# combining US covid case and death data to one data frame
+us_all <- us_covid %>% full_join(us_covidde) %>% mutate(Eq_Dist = round(abs(Lat))) %>% filter(!is.na(Eq_Dist))  %>% filter(!is.na(Population))  %>% filter(cases > 0) %>% filter(Population > 0)
+# grouping data by distance from equator and adding deaths_per_thou (deaths per thousand) variable
+us_by_Eq_Dist <- us_all %>% group_by (Eq_Dist, date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>% mutate(deaths_per_thou = deaths*1000/Population) %>% select(Eq_Dist, date, cases, deaths, deaths_per_thou, Population) %>% ungroup()
+# adding variables for new cases and new deaths 
+us_by_Eq_Dist <- us_by_Eq_Dist %>% mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths)) %>% mutate(new_cases = coalesce(new_cases,0)) %>% mutate(new_deaths = coalesce(new_deaths,0))
+
+
+
+```
+Below I will establish several models that attempt to predict deaths from distance to equator using both global data and US data. 
+
+
+```{r globaldatamodel, echo=FALSE}
+#modelss for US Data
+gmod1 <- lm(deaths ~ Eq_Dist, global_by_Eq_Dist) 
+summary(gmod1)
+gmod2 <- lm(deaths_per_thou ~ Eq_Dist, global_by_Eq_Dist) 
+summary(gmod2)
+gmod3 <- lm(deaths ~ cases + Population + Eq_Dist, global_by_Eq_Dist) 
+summary(gmod3)
+gmod4 <- lm(deaths_per_thou ~ cases + Population + Eq_Dist, global_by_Eq_Dist)
+summary(gmod4)
+# adding columns of predicted values based on the models to dataframe of US Covid data grouped by distance from equator 
+global_by_Eq_Dist_Pred <- global_by_Eq_Dist %>% mutate(pred1 = predict(gmod1),pred2 = predict(gmod2), pred3 = predict(gmod3),pred4 = predict(gmod4))
+```
+
+
+```{r usdatamodel, echo=FALSE}
+#modelss for US Data
+mod1 <- lm(deaths ~ Eq_Dist, us_by_Eq_Dist) 
+summary(mod1)
+mod2 <- lm(deaths_per_thou ~ Eq_Dist, us_by_Eq_Dist) 
+summary(mod2)
+mod3 <- lm(deaths ~ cases + Population + Eq_Dist, us_by_Eq_Dist) 
+summary(mod3)
+mod4 <- lm(deaths_per_thou ~ cases + Population + Eq_Dist, us_by_Eq_Dist)
+summary(mod4)
+# adding columns of predicted values based on the models to dataframe of US Covid data grouped by distance from equator 
+us_by_Eq_Dist_Pred <- us_by_Eq_Dist %>% mutate(pred1 = predict(mod1),pred2 = predict(mod2), pred3 = predict(mod3),pred4 = predict(mod4))
+```
+
+One can see that distance from the equator (Eq_Dist) alone is not a significant model for deaths in a global setting but does serve as a significant model, according to the estimated probability, for US deaths alone. Distance from the equator alone or with Population and Cases is a significant predictor of deaths per thousand. Below I plotted several of the models for both global and US data. 
+
+## Global Plots 
+```{r GlobalModelPlot, echo=FALSE}
+#plotting data of deaths by distance from Equator against model of relationship
+global_by_Eq_Dist_Pred %>% ggplot() + geom_point(aes(x = Eq_Dist, y = deaths), color = "green", alpha = 0.03) + geom_point(aes(x = Eq_Dist, y = pred1), color = "red")
+
+global_by_Eq_Dist_Pred %>% ggplot() + geom_point(aes(x = Eq_Dist, y = deaths_per_thou), color = "green",alpha = 0.03) + geom_point(aes(x = Eq_Dist, y = pred2), color = "red")
+```
+
+## US Plots
+
+```{r USModelPlot, echo=FALSE}
+#plotting data of deaths by distance from Equator against model of relationship
+us_by_Eq_Dist_Pred %>% ggplot() + geom_point(aes(x = Eq_Dist, y = deaths), color = "blue", alpha = 0.03) + geom_point(aes(x = Eq_Dist, y = pred1), color = "red")
+
+us_by_Eq_Dist_Pred %>% ggplot() + geom_point(aes(x = Eq_Dist, y = deaths_per_thou), color = "blue",alpha = 0.03) + geom_point(aes(x = Eq_Dist, y = pred2), color = "red")
+```
+
+
+## Conclusion and Bias 
+There is a statistically significant relationship between distance from Equator and covid deaths per thousand, even with accounting for the other variables cases and population, when using a linear regression model. It was interesting that the relationship between deaths and distance from equator and deaths per thousand and distance from the equator had opposite signs when accounting for population and number of cases.Also there was a negative correlation between deaths per thousand and distance from the equator in the USA but a postivie correlation in the global data. 
+
+There is potential bias in the data for several reasons. First, places with poor health infrastructure, which is typically closer to the equator, may not have been able to accurately collect data on covid related deaths because of lack of testing availability or other access points. Second, many areas could wish to modify their covid death reports for political or economic reasons. Covid restrictions or lack thereof are a potential way to subdue or pacify citizens so governments could want the data to support the policies rather than the other way around.
